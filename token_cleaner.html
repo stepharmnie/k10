@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<title>Token list cleaner</title>
+<style>
+  body { font-family: Verdana, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f3f5f7; margin: 0; padding: 20px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 24px 0 6px; }
+  p.sub { margin: 0 0 16px; color: #52606d; }
+  label { display: block; font-weight: bold; margin: 12px 0 4px; }
+  textarea { width: 100%; box-sizing: border-box; font-family: Consolas, "Courier New", monospace; font-size: 12px; padding: 8px; border: 1px solid #9aa5b1; }
+  #input { height: 170px; }
+  #unc { height: 70px; }
+  .bar { margin: 12px 0; }
+  button { font-size: 14px; padding: 8px 16px; margin-right: 8px; border: 1px solid #1d4e89; background: #1d4e89; color: #fff; cursor: pointer; }
+  button.alt { background: #fff; color: #1d4e89; }
+  #status { margin: 8px 0; font-weight: bold; }
+  #warn { margin: 8px 0; padding: 8px; background: #fde8e8; border: 1px solid #e0a3a3; display: none; }
+  table { border-collapse: collapse; width: 100%; background: #fff; margin-top: 8px; }
+  th, td { border: 1px solid #cbd2d9; padding: 5px 8px; text-align: left; }
+  th { background: #e4e7eb; }
+  tr.short td { background: #fff7e0; }
+  .note { color: #52606d; font-size: 12px; margin-top: 8px; }
+  .hint { color: #52606d; font-size: 12px; font-weight: normal; }
+  footer { margin-top: 32px; padding-top: 12px; border-top: 1px solid #cbd2d9; color: #52606d; font-size: 12px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Token list cleaner</h1>
+  <p class="sub">Paste the raw text, optionally add the uncollected tokens, then click Clean. Everything runs in your browser; nothing is uploaded.</p>
+
+  <label for="input">1. Raw text from the website</label>
+  <textarea id="input" placeholder="Paste raw rows here..."></textarea>
+
+  <label for="unc">2. Uncollected tokens (physically remaining) <span class="hint">- optional; separate with spaces, commas or new lines</span></label>
+  <textarea id="unc" placeholder="e.g. 2028 2049 7001 95"></textarea>
+
+  <div class="bar">
+    <button id="go">Clean</button>
+    <button id="clear" class="alt">Clear</button>
+  </div>
+  <div id="status"></div>
+  <div id="warn"></div>
+  <div id="out"></div>
+  <p class="note">Rows with a 4-digit token come first, sorted ascending. Rows with only a 1-3 digit token (shaded) follow, also sorted. Undelivered = every cleaned row whose token is not in your uncollected list. Rows with no AM number or no bracketed token are skipped. A row counts as being in the website's Uncollected Bin if its brackets contain "Uncollected Bin".</p>
+  <footer>Developed by PRP Steph, 15 October 2026</footer>
+</div>
+
+<script>
+var views = {};
+
+function parse(text) {
+  var lines = text.split(/\r?\n/);
+  var four = [], short = [], skipped = 0, i;
+
+  for (i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    if (!line.replace(/\s+/g, '')) continue;
+
+    var am = line.match(/(AM\d{8})/);
+    var br = line.match(/\(([^)]*)\)/);
+    if (!am || !br) { skipped++; continue; }
+
+    // Ignore detail lines such as "AM00007881 (4)": no arrival time and nothing after the bracket
+    if (!/arrival time/i.test(br[1]) && !line.substring(line.indexOf(')') + 1).replace(/\s+/g, '')) continue;
+
+    var tokenPart = br[1].split('/')[0];
+    var tokens = tokenPart.match(/\b\d+\b/g) || [];
+    var t4 = [], t3 = [], k;
+    for (k = 0; k < tokens.length; k++) {
+      if (tokens[k].length === 4) t4.push(tokens[k]);
+      else if (tokens[k].length <= 3) t3.push(tokens[k]);
+    }
+
+    var after = line.substring(line.indexOf(')') + 1);
+    var name = after.split('Keep in Delivery Bin')[0];
+    name = name.replace(/\s+\d+\s+\d+[YM].*$/, '').replace(/^\s+|\s+$/g, '');
+
+    var allT = [], m;
+    for (m = 0; m < tokens.length; m++) allT.push(parseInt(tokens[m], 10));
+    var inBin = /uncollected bin/i.test(br[1]);
+
+    if (t4.length) four.push({ token: parseInt(t4[0], 10), name: name, am: am[1], short: false, all: allT, inBin: inBin });
+    else if (t3.length) short.push({ token: parseInt(t3[0], 10), name: name, am: am[1], short: true, all: allT, inBin: inBin });
+    else skipped++;
+  }
+
+  var byToken = function (a, b) { return a.token - b.token; };
+  four.sort(byToken);
+  short.sort(byToken);
+  return { rows: four.concat(short), four: four.length, short: short.length, skipped: skipped };
+}
+
+function parseTokenList(text) {
+  var nums = text.match(/\d+/g) || [];
+  var set = {}, order = [], i, n;
+  for (i = 0; i < nums.length; i++) {
+    n = parseInt(nums[i], 10);
+    if (!set[n]) { set[n] = true; order.push(n); }
+  }
+  return { set: set, order: order };
+}
+
+function esc(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function tableHTML(list) {
+  var html = '<table><tr><th>Token Number</th><th>Name</th><th>AM number</th></tr>', i, r;
+  if (!list.length) return '<p class="note">No rows.</p>';
+  for (i = 0; i < list.length; i++) {
+    r = list[i];
+    html += '<tr' + (r.short ? ' class="short"' : '') + '><td>' + r.token + '</td><td>' +
+            esc(r.name) + '</td><td>' + r.am + '</td></tr>';
+  }
+  return html + '</table>';
+}
+
+function section(key, title, list) {
+  views[key] = list;
+  return '<h2>' + title + ' (' + list.length + ')</h2>' +
+    '<div><button class="alt" onclick="copyView(\'' + key + '\')">Copy for Excel</button>' +
+    '<button class="alt" onclick="downloadView(\'' + key + '\')">Download CSV</button></div>' +
+    tableHTML(list);
+}
+
+function toTSV(list) {
+  var out = ['Token Number\tName\tAM number'], i, r;
+  for (i = 0; i < list.length; i++) {
+    r = list[i];
+    out.push(r.token + '\t' + r.name + '\t' + r.am);
+  }
+  return out.join('\r\n');
+}
+
+function toCSV(list) {
+  var out = ['Token Number,Name,AM number'], i, r;
+  for (i = 0; i < list.length; i++) {
+    r = list[i];
+    out.push(r.token + ',"' + r.name.replace(/"/g, '""') + '",' + r.am);
+  }
+  return out.join('\r\n');
+}
+
+function copyText(text) {
+  if (window.clipboardData && window.clipboardData.setData) {      // old IE
+    window.clipboardData.setData('Text', text);
+    return true;
+  }
+  var ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.top = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  var ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) {}
+  document.body.removeChild(ta);
+  return ok;
+}
+
+function copyView(key) {
+  alert(copyText(toTSV(views[key])) ? 'Copied. Paste into Excel.' : 'Copy failed. Use Download CSV instead.');
+}
+
+var fileNames = { all: 'token_records.csv', unc: 'uncollected.csv', und: 'undelivered.csv',
+                  nb: 'uncollected_not_in_bin.csv', ter: 'terdelivered.csv' };
+
+function downloadView(key) {
+  var csv = toCSV(views[key]), name = fileNames[key];
+  if (window.Blob && navigator.msSaveBlob) {                       // IE
+    navigator.msSaveBlob(new Blob([csv], { type: 'text/csv' }), name);
+  } else if (window.Blob && window.URL && window.URL.createObjectURL) {
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' }));
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  } else {
+    alert('This browser cannot download files. Use Copy for Excel instead.');
+  }
+}
+
+document.getElementById('go').onclick = function () {
+  var result = parse(document.getElementById('input').value);
+  var list = result.rows;
+  var tl = parseTokenList(document.getElementById('unc').value);
+  var warn = document.getElementById('warn');
+  var html, i;
+
+  views = {};
+  warn.style.display = 'none';
+
+  var status = 'Total: ' + list.length + ' | 4-digit: ' + result.four + ' | 1-3 digit: ' + result.short +
+    (result.skipped ? ' | Skipped: ' + result.skipped : '');
+
+  if (!tl.order.length) {
+    html = section('all', 'All records', list);
+  } else {
+    var unc = [], und = [], found = {};
+    for (i = 0; i < list.length; i++) {
+      if (tl.set[list[i].token]) { unc.push(list[i]); found[list[i].token] = true; }
+      else und.push(list[i]);
+    }
+    var anyTok = {}, j, n;
+    for (i = 0; i < list.length; i++) {
+      for (j = 0; j < list[i].all.length; j++) {
+        if (!anyTok[list[i].all[j]]) anyTok[list[i].all[j]] = list[i];
+      }
+    }
+    var notInBin = [], ter = [], secondary = [];
+    for (i = 0; i < unc.length; i++) {
+      if (!unc[i].inBin) notInBin.push(unc[i]);
+    }
+    for (i = 0; i < tl.order.length; i++) {
+      n = tl.order[i];
+      if (found[n]) continue;
+      if (anyTok[n]) secondary.push(n + ' (secondary token of ' + anyTok[n].name + ', ' + anyTok[n].am + ')');
+      else ter.push({ token: n, name: '', am: '', short: false });
+    }
+    ter.sort(function (a, b) {
+      var pa = String(a.token).length === 4 ? 0 : 1, pb = String(b.token).length === 4 ? 0 : 1;
+      return pa - pb || a.token - b.token;
+    });
+    if (secondary.length) {
+      warn.innerHTML = 'These listed tokens only match a secondary token of a patient, so they are not in any table: ' + secondary.join('; ');
+      warn.style.display = 'block';
+    }
+    status += ' | Uncollected: ' + unc.length + ' | Undelivered: ' + und.length +
+              ' | Not in website bin: ' + notInBin.length + ' | Terdelivered: ' + ter.length;
+    html = section('unc', 'Uncollected', unc) + section('und', 'Undelivered', und) +
+      section('nb', 'Physically uncollected, but NOT in the website\'s Uncollected Bin', notInBin) +
+      section('ter', 'Physically uncollected, but not in the website text (terdelivered)', ter);
+  }
+
+  document.getElementById('status').innerHTML = status;
+  document.getElementById('out').innerHTML = html;
+};
+
+document.getElementById('clear').onclick = function () {
+  document.getElementById('input').value = '';
+  document.getElementById('unc').value = '';
+  document.getElementById('out').innerHTML = '';
+  document.getElementById('status').innerHTML = '';
+  document.getElementById('warn').style.display = 'none';
+  views = {};
+};
+</script>
+</body>
+</html>
